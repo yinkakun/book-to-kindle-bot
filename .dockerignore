@@ -1,0 +1,15 @@
+# Ignore temp files
+downloads/
+bin/
+
+# Ignore git-related files
+.git/
+.gitignore
+
+# Ignore Docker configuration files not needed in the final image
+dockerfile
+fly.toml
+
+# Ignore environment and documentation files
+.env.template
+readme.md
