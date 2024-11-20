@@ -13,20 +13,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ses"
-	"github.com/aws/aws-sdk-go-v2/service/ses/types"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
-	_ "github.com/mattn/go-sqlite3"
+	"gopkg.in/gomail.v2"
+	_ "modernc.org/sqlite"
 )
 
 type BotConfig struct {
-	DbPath        string
-	BotEmail      string
-	TelegramToken string
-
+	DbPath          string
+	BotEmail        string
+	TelegramToken   string
 	MaxFileSize     int
 	DownloadTimeout time.Duration
 }
@@ -55,7 +51,6 @@ type Db struct {
 type BookToKindleBot struct {
 	db             *Db
 	config         BotConfig
-	sesClient      *ses.Client
 	httpClient     *http.Client
 	telegramBotApi *tgbotapi.BotAPI
 }
@@ -72,12 +67,11 @@ var supportedMimeTypes = map[string]bool{
  */
 
 func NewDb(dbPath string) (*Db, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening SQLite database: %w", err)
 	}
 
-	defer db.Close()
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(time.Hour)
@@ -118,13 +112,6 @@ func NewBookToKindleBot(config BotConfig) (*BookToKindleBot, error) {
 		return nil, fmt.Errorf("error creating telegram bot API: %w", err)
 	}
 
-	telegramBotApi.Debug = true
-
-	awsConfig, err := awsConfig.LoadDefaultConfig(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("error loading AWS config: %w", err)
-	}
-
 	db, err := NewDb(config.DbPath)
 	if err != nil {
 		return nil, fmt.Errorf("error creating database: %w", err)
@@ -134,15 +121,14 @@ func NewBookToKindleBot(config BotConfig) (*BookToKindleBot, error) {
 		db:             db,
 		config:         config,
 		telegramBotApi: telegramBotApi,
-		sesClient:      ses.NewFromConfig(awsConfig),
 		httpClient:     &http.Client{Timeout: config.DownloadTimeout},
 	}, nil
 }
 
-func (b *BookToKindleBot) Run(ctx context.Context) error {
+func (b *BookToKindleBot) Start(ctx context.Context) error {
 	const directoryPermission = 0755 // rwxr-xr-x
-	if err := os.Mkdir("downloads", directoryPermission); err != nil {
-		return fmt.Errorf("error creating downloads directory: %w", err)
+	if err := os.MkdirAll("downloads", directoryPermission); err != nil {
+		return fmt.Errorf("failed to create downloads directory: %w", err)
 	}
 
 	updateConfig := tgbotapi.NewUpdate(0)
@@ -158,6 +144,23 @@ func (b *BookToKindleBot) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+}
+
+func (b *BookToKindleBot) CleanUp(ctx context.Context) {
+	if err := os.RemoveAll("downloads"); err != nil {
+		slog.Error("error cleaning up downloads directory",
+			"error", err,
+			"path", "downloads",
+		)
+	}
+
+	if b.db == nil {
+		return
+	}
+
+	if err := b.db.Close(); err != nil {
+		slog.Error("error closing database", "error", err, "db_path", b.config.DbPath)
 	}
 }
 
@@ -181,6 +184,12 @@ func (b *BookToKindleBot) handleUpdate(ctx context.Context, update tgbotapi.Upda
 		b.handleCommand(ctx, update)
 		return
 	}
+
+	b.handleUnsupportedMessage(update)
+}
+
+func (b *BookToKindleBot) handleUnsupportedMessage(update tgbotapi.Update) {
+	b.sendMessage(update.Message.Chat.ID, "Unsupported message type. Send me a PDF, EPUB, or MOBI file")
 }
 
 func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Update) {
@@ -200,7 +209,7 @@ func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Up
 		return
 	}
 
-	b.sendMessage(update.Message.Chat.ID, "Sending book to Kindle...")
+	b.sendMessage(update.Message.Chat.ID, "Downloading file...")
 
 	fileBytes, err := b.downloadTelegramFile(update.Message.Document.FileID)
 	if err != nil {
@@ -209,12 +218,9 @@ func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Up
 		return
 	}
 
-	_, err = b.sesClient.SendRawEmail(ctx, &ses.SendRawEmailInput{
-		Source:       aws.String(b.config.BotEmail),
-		RawMessage:   &types.RawMessage{Data: fileBytes},
-		Destinations: []string{kindleEmail},
-	})
-	if err != nil {
+	b.sendMessage(update.Message.Chat.ID, "Download successful. Sending file to Kindle...")
+
+	if err := b.sendEmail(kindleEmail, fileBytes, update.Message.Document.FileName); err != nil {
 		slog.Error("error sending email", "error", err, "user_id", update.Message.From.ID, "kindle_email", kindleEmail)
 		b.sendMessage(update.Message.Chat.ID, "Error sending email, please try again later")
 		return
@@ -225,6 +231,27 @@ func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Up
 	}
 
 	b.sendMessage(update.Message.Chat.ID, "Book sent to Kindle successfully")
+}
+
+func (b *BookToKindleBot) sendEmail(kindleEmail string, fileBytes []byte, fileName string) error {
+	m := gomail.NewMessage()
+
+	m.SetHeader("To", kindleEmail)
+	m.SetHeader("From", b.config.BotEmail)
+	m.SetHeader("Subject", "BookToKindleBot")
+
+	m.Attach(fileName, gomail.SetCopyFunc(func(w io.Writer) error {
+		_, err := w.Write(fileBytes)
+		return err
+	}))
+
+	d := gomail.NewDialer("email-smtp.us-east-1.amazonaws.com", 587, os.Getenv("AWS_SES_SMTP_USERNAME"), os.Getenv("AWS_SES_SMTP_PASSWORD"))
+
+	if err := d.DialAndSend(m); err != nil {
+		return fmt.Errorf("error sending email: %w", err)
+	}
+
+	return nil
 }
 
 func (b *BookToKindleBot) sendMessage(chatId int64, text string) {
@@ -320,7 +347,7 @@ func (b *BookToKindleBot) downloadTelegramFile(fileId string) ([]byte, error) {
 		return nil, fmt.Errorf("error getting file info: %w", err)
 	}
 
-	fileUrl, err := b.telegramBotApi.GetFileDirectURL(file.FilePath)
+	fileUrl, err := b.telegramBotApi.GetFileDirectURL(file.FileID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting file URL: %w", err)
 	}
@@ -341,43 +368,37 @@ func (b *BookToKindleBot) downloadTelegramFile(fileId string) ([]byte, error) {
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file, ", err)
+		log.Fatal("Error loading env, ", err)
 	}
 
-	dbPath := os.Getenv("DB_PATH")
-	botEmail := os.Getenv("BOT_EMAIL")
-	telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	requiredEnvVars := []string{"DB_PATH", "BOT_EMAIL", "TELEGRAM_BOT_TOKEN", "AWS_SES_SMTP_PASSWORD", "AWS_SES_SMTP_USERNAME"}
 
-	if dbPath == "" {
-		log.Fatal("DB_PATH environment variable is required")
-	}
-
-	if botEmail == "" {
-		log.Fatal("BOT_EMAIL environment variable is required")
-	}
-
-	if telegramToken == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN environment variable is required")
+	for _, envVar := range requiredEnvVars {
+		if os.Getenv(envVar) == "" {
+			log.Fatalf("%s environment variable is required", envVar)
+		}
 	}
 
 	bookToKindleBot, err := NewBookToKindleBot(BotConfig{
-		DbPath:          dbPath,
-		BotEmail:        botEmail,
-		TelegramToken:   telegramToken,
-		MaxFileSize:     20 * 1024 * 1024,
 		DownloadTimeout: 30 * time.Second,
+		MaxFileSize:     20 * 1024 * 1024,
+		DbPath:          os.Getenv("DB_PATH"),
+		BotEmail:        os.Getenv("BOT_EMAIL"),
+		TelegramToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
 	})
 
 	if err != nil {
 		slog.Error("error creating bot", "error", err)
 	}
 
-	slog.Info("starting bot", "username", bookToKindleBot.telegramBotApi.Self.UserName, "bot_email", botEmail)
+	slog.Info("starting bot", "username", bookToKindleBot.telegramBotApi.Self.UserName)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := bookToKindleBot.Run(ctx); err != nil {
-		slog.Error("error running bot", "error", err)
+	if err := bookToKindleBot.Start(ctx); err != nil {
+		slog.Error("error starting bot", "error", err)
 	}
+
+	defer bookToKindleBot.CleanUp(ctx)
 }
