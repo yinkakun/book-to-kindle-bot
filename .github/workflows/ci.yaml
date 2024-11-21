@@ -17,7 +17,9 @@ jobs:
     - name: Check spellings
       uses: crate-ci/typos@master
       with:
-        files: "**/*.{md,go}"
+        files: |
+          **/*.md
+          **/*.go
   build:
     name: Build
     runs-on: ubuntu-latest
