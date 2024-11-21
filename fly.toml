@@ -16,9 +16,11 @@ memory = '512mb'
 cpu_kind = 'shared'
 cpus = 1
 
+
 [http_service]
-ports = ["8080"]
+internal_port = 8080
 force_https = true
 auto_stop_machines = "off"
-processes = ["app"]
-min_machines_running = 1
+auto_start_machines = true
+min_machines_running = 0
+processes = ['app']
