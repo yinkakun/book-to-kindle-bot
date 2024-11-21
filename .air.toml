@@ -1,0 +1,18 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+bin = "./tmp/main"
+cmd = "go build -o ./tmp/main ."
+exclude_regex = ["_test.go"]
+include_ext = ["go", "tpl", "tmpl", "html", "env"]
+log = "build-errors.log"
+
+[color]
+build = "yellow"
+main = "magenta"
+runner = "green"
+watcher = "cyan"
+
+[screen]
+clear_on_rebuild = true
