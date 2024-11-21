@@ -1,0 +1,27 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 
+
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly with dockerfile
+        run: flyctl deploy --dockerfile dockerfile --detach -y
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

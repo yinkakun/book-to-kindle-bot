@@ -1,0 +1,16 @@
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+
+app = 'book-to-kindle-bot'
+primary_region = 'ams'
+
+[build]
+dockerfile = 'dockerfile'
+
+[[mounts]]
+source = 'data'
+destination = '/app'
+
+[[vm]]
+memory = '512mb'
+cpu_kind = 'shared'
+cpus = 1

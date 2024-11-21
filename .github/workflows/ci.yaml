@@ -14,11 +14,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Check spelling of file.txt
+    - name: Check spellings
       uses: crate-ci/typos@master
       with:
-        # check source code files
-        files: ./*.go
+        files: ./**/*.go
   build:
     name: Build
     runs-on: ubuntu-latest
