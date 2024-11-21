@@ -18,8 +18,8 @@ jobs:
       uses: crate-ci/typos@master
       with:
         files: |
-          **/*.md
-          **/*.go
+          *.md
+          *.go
   build:
     name: Build
     runs-on: ubuntu-latest
