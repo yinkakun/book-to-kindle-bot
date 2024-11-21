@@ -30,5 +30,7 @@ RUN chown -R appuser:appgroup /app
 WORKDIR /app
 USER appuser
 
+EXPOSE 8080
+
 # Command to run the executable
 CMD ["/app/book-to-kindle-bot"]

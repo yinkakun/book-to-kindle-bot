@@ -9,8 +9,16 @@ dockerfile = 'dockerfile'
 [[mounts]]
 source = 'data'
 destination = '/app'
+processes = ["app"]
 
 [[vm]]
 memory = '512mb'
 cpu_kind = 'shared'
 cpus = 1
+
+[http_service]
+ports = ["8080"]
+force_https = true
+auto_stop_machines = "off"
+processes = ["app"]
+min_machines_running = 1
