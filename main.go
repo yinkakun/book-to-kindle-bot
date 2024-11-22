@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
 	"gopkg.in/gomail.v2"
@@ -20,6 +21,7 @@ import (
 )
 
 type BotConfig struct {
+	MaxWorkers      int
 	DbPath          string
 	BotEmail        string
 	TelegramToken   string
@@ -148,9 +150,7 @@ func (b *BookToKindleBot) Start(ctx context.Context) error {
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = int(time.Second * 60)
 	updates := b.telegramBotApi.GetUpdatesChan(updateConfig)
-
-	maxWorkers := 10
-	workerPool := make(chan struct{}, maxWorkers)
+	workerPool := make(chan struct{}, b.config.MaxWorkers)
 
 	for {
 		select {
@@ -266,7 +266,11 @@ func (b *BookToKindleBot) sendEmail(kindleEmail string, fileBytes []byte, fileNa
 
 	d := gomail.NewDialer("email-smtp.us-east-1.amazonaws.com", 587, os.Getenv("AWS_SES_SMTP_USERNAME"), os.Getenv("AWS_SES_SMTP_PASSWORD"))
 
-	if err := d.DialAndSend(m); err != nil {
+	err := backoff.Retry(func() error {
+		return d.DialAndSend(m)
+	}, backoff.NewExponentialBackOff())
+
+	if err != nil {
 		return fmt.Errorf("error sending email: %w", err)
 	}
 
@@ -371,7 +375,13 @@ func (b *BookToKindleBot) downloadTelegramFile(fileId string) ([]byte, error) {
 		return nil, fmt.Errorf("error getting file URL: %w", err)
 	}
 
-	resp, err := b.httpClient.Get(fileUrl)
+	var resp *http.Response
+	err = backoff.Retry(func() error {
+		var err error
+		resp, err = b.httpClient.Get(fileUrl)
+		return err
+	}, backoff.NewExponentialBackOff())
+
 	if err != nil {
 		return nil, fmt.Errorf("error downloading file: %w", err)
 	}
@@ -401,6 +411,7 @@ func main() {
 	bookToKindleBot, err := NewBookToKindleBot(BotConfig{
 		DownloadTimeout: 30 * time.Second,
 		MaxFileSize:     20 * 1024 * 1024,
+		MaxWorkers:      10,
 		DbPath:          os.Getenv("DB_PATH"),
 		BotEmail:        os.Getenv("BOT_EMAIL"),
 		TelegramToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),

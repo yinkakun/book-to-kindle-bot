@@ -1,8 +1,9 @@
 module book-to-kindle-bot
 
-go 1.22.4
+go 1.23.3
 
 require (
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/joho/godotenv v1.5.1
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
