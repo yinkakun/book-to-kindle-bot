@@ -43,7 +43,7 @@ Send eBooks from Telegram directly to your Kindle via your kindle email. Support
 3. Create a `.env` file with required variables
 
    ```env
-   DB_PATH=./db.sqlite
+   DB_PATH=bot.db
    BOT_EMAIL=your-bot-email@example.com # Email used to send books
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token
    AWS_SES_SMTP_USERNAME=your_ses_username

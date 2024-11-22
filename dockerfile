@@ -18,7 +18,6 @@ RUN addgroup -S appgroup && \
 WORKDIR /app
 COPY --from=builder /app/book-to-kindle-bot .
 COPY --from=builder /app/.env .
-RUN chown -R appuser:appgroup /app
 
 USER appuser
 EXPOSE 8080
