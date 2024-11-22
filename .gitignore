@@ -31,3 +31,4 @@ tmp/
 
 # Database files
 *.sqlite
+*.db
