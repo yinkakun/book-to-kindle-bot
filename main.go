@@ -131,6 +131,18 @@ func (b *BookToKindleBot) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create downloads directory: %w", err)
 	}
 
+	go func() {
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("OK"))
+			w.WriteHeader(http.StatusOK)
+		})
+
+		slog.Info("starting health check server on :8080")
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			slog.Error("error starting health check server", "error", err)
+		}
+	}()
+
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = int(time.Second * 60)
 	updates := b.telegramBotApi.GetUpdatesChan(updateConfig)
