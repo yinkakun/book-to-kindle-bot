@@ -72,9 +72,11 @@ func NewDb(dbPath string) (*Db, error) {
 		return nil, fmt.Errorf("error opening SQLite database: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(time.Hour)
+
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		return nil, fmt.Errorf("error enabling WAL mode: %w", err)
+	}
 
 	if _, err := db.Exec(dbSchema); err != nil {
 		return nil, fmt.Errorf("error creating database schema: %w", err)
@@ -147,12 +149,17 @@ func (b *BookToKindleBot) Start(ctx context.Context) error {
 	updateConfig.Timeout = int(time.Second * 60)
 	updates := b.telegramBotApi.GetUpdatesChan(updateConfig)
 
+	maxWorkers := 10
+	workerPool := make(chan struct{}, maxWorkers)
+
 	for {
 		select {
 		case update := <-updates:
-			if update.Message != nil {
-				go b.handleUpdate(ctx, update)
-			}
+			workerPool <- struct{}{}
+			go func(update tgbotapi.Update) {
+				defer func() { <-workerPool }()
+				b.handleUpdate(ctx, update)
+			}(update)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
