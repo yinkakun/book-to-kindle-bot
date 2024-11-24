@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/mail"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -158,6 +157,7 @@ func (b *BookToKindleBot) Start(ctx context.Context) error {
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = int(time.Second * 60)
 	updates := b.telegramBotApi.GetUpdatesChan(updateConfig)
+
 	workerPool := make(chan struct{}, b.config.MaxWorkers)
 
 	for {
@@ -216,7 +216,7 @@ func (b *BookToKindleBot) handleUpdate(ctx context.Context, update tgbotapi.Upda
 }
 
 func (b *BookToKindleBot) handleUnsupportedMessage(update tgbotapi.Update) {
-	b.sendMessage(update.Message.Chat.ID, "Unsupported message type. Send me a PDF, EPUB, or MOBI file")
+	b.sendMessage(update.Message.Chat.ID, "This isn't a supported message type or command. Use /help for available commands")
 }
 
 func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Update) {
@@ -247,7 +247,7 @@ func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Up
 
 	b.sendMessage(update.Message.Chat.ID, "Download successful. Sending file to Kindle...")
 
-	if err := b.sendEmail(kindleEmail, fileBytes, update.Message.Document.FileName); err != nil {
+	if err := b.sendEmail(kindleEmail, fileBytes, update.Message.Document.FileName, update.Message.Document.MimeType); err != nil {
 		slog.Error("error sending email", "error", err, "user_id", update.Message.From.ID, "kindle_email", kindleEmail)
 		b.sendMessage(update.Message.Chat.ID, "Error sending email, please try again later")
 		return
@@ -260,24 +260,21 @@ func (b *BookToKindleBot) handleDocument(ctx context.Context, update tgbotapi.Up
 	b.sendMessage(update.Message.Chat.ID, "Book sent to Kindle successfully")
 }
 
-func (b *BookToKindleBot) sendEmail(kindleEmail string, fileBytes []byte, fileName string) error {
-	m := gomail.NewMessage()
+func (b *BookToKindleBot) sendEmail(kindleEmail string, fileBytes []byte, fileName, mimeType string) error {
+	email := gomail.NewMessage()
 
-	m.SetHeader("To", kindleEmail)
-	m.SetHeader("From", b.config.BotEmail)
-	m.SetHeader("Subject", "BookToKindleBot")
+	email.Attach(
+		fileName,
+		gomail.SetCopyFunc(func(w io.Writer) error {
+			_, err := w.Write(fileBytes)
+			return err
+		}),
+		gomail.SetHeader(map[string][]string{"Content-Type": {mimeType}}),
+	)
 
-	m.Attach(fileName, gomail.SetCopyFunc(func(w io.Writer) error {
-		_, err := w.Write(fileBytes)
-		return err
-	}))
-
-	// port, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
-	// if err != nil {
-	// 	log.Fatal("Failed to convert SMTP_PORT to integer:", err)
-	// }
-
-	// os.Getenv("SMTP_HOST"), port, os.Getenv("SMTP_USERNAME"), os.Getenv("SMTP_PASSWORD")
+	email.SetHeader("To", kindleEmail)
+	email.SetHeader("From", b.config.BotEmail)
+	email.SetHeader("Subject", "Book To Kindle Bot")
 
 	d := gomail.NewDialer(
 		b.config.MailerConfig.Host,
@@ -287,8 +284,10 @@ func (b *BookToKindleBot) sendEmail(kindleEmail string, fileBytes []byte, fileNa
 	)
 
 	err := backoff.Retry(func() error {
-		return d.DialAndSend(m)
-	}, backoff.NewExponentialBackOff())
+		return d.DialAndSend(email)
+	}, backoff.NewExponentialBackOff(
+		backoff.WithMaxElapsedTime(30*time.Second),
+	))
 
 	if err != nil {
 		return fmt.Errorf("error sending email: %w", err)
@@ -371,15 +370,16 @@ func (b *BookToKindleBot) setKindleEmailCommand(ctx context.Context, update tgbo
  */
 
 func validateEmail(email string) (string, error) {
-	address, err := mail.ParseAddress(email)
+	// address, err := mail.ParseAddress(email)
+	_, err := mail.ParseAddress(email)
 
 	if err != nil {
 		return "", fmt.Errorf("invalid email address: %w", err)
 	}
 
-	if !strings.HasSuffix(address.Address, "@kindle.com") {
-		return "", fmt.Errorf("email address is not a kindle email address")
-	}
+	// if !strings.HasSuffix(address.Address, "@kindle.com") {
+	// 	return "", fmt.Errorf("email address is not a kindle email address")
+	// }
 
 	return email, nil
 }
@@ -395,19 +395,25 @@ func (b *BookToKindleBot) downloadTelegramFile(fileId string) ([]byte, error) {
 		return nil, fmt.Errorf("error getting file URL: %w", err)
 	}
 
-	var resp *http.Response
-	err = backoff.Retry(func() error {
-		var err error
-		resp, err = b.httpClient.Get(fileUrl)
-		return err
-	}, backoff.NewExponentialBackOff())
+	resp, err := backoff.RetryWithData(func() (*http.Response, error) {
+		resp, err := b.httpClient.Get(fileUrl)
+		return resp, err
+	}, backoff.NewExponentialBackOff(
+		backoff.WithRetryStopDuration(b.config.DownloadTimeout),
+	))
 
 	if err != nil {
 		return nil, fmt.Errorf("error downloading file: %w", err)
 	}
 
 	defer resp.Body.Close()
-	return io.ReadAll(io.LimitReader(resp.Body, int64(b.config.MaxFileSize)))
+
+	fileBytes, err := io.ReadAll(io.LimitReader(resp.Body, int64(b.config.MaxFileSize)))
+	if err != nil {
+		return nil, fmt.Errorf("error reading file: %w", err)
+	}
+
+	return fileBytes, nil
 }
 
 /*
