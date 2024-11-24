@@ -27,6 +27,14 @@ type BotConfig struct {
 	TelegramToken   string
 	MaxFileSize     int
 	DownloadTimeout time.Duration
+	MailerConfig    MailerConfig
+}
+
+type MailerConfig struct {
+	Port     int
+	Host     string
+	Username string
+	Password string
 }
 
 const dbSchema = `
@@ -264,7 +272,19 @@ func (b *BookToKindleBot) sendEmail(kindleEmail string, fileBytes []byte, fileNa
 		return err
 	}))
 
-	d := gomail.NewDialer("email-smtp.us-east-1.amazonaws.com", 587, os.Getenv("AWS_SES_SMTP_USERNAME"), os.Getenv("AWS_SES_SMTP_PASSWORD"))
+	// port, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
+	// if err != nil {
+	// 	log.Fatal("Failed to convert SMTP_PORT to integer:", err)
+	// }
+
+	// os.Getenv("SMTP_HOST"), port, os.Getenv("SMTP_USERNAME"), os.Getenv("SMTP_PASSWORD")
+
+	d := gomail.NewDialer(
+		b.config.MailerConfig.Host,
+		b.config.MailerConfig.Port,
+		b.config.MailerConfig.Username,
+		b.config.MailerConfig.Password,
+	)
 
 	err := backoff.Retry(func() error {
 		return d.DialAndSend(m)
@@ -400,7 +420,14 @@ func main() {
 		log.Fatal("Error loading env, ", err)
 	}
 
-	requiredEnvVars := []string{"DB_PATH", "BOT_EMAIL", "TELEGRAM_BOT_TOKEN", "AWS_SES_SMTP_PASSWORD", "AWS_SES_SMTP_USERNAME"}
+	requiredEnvVars := []string{
+		"DB_PATH",
+		"BOT_EMAIL",
+		"SMTP_HOST",
+		"SMTP_USERNAME",
+		"SMTP_PASSWORD",
+		"TELEGRAM_BOT_TOKEN",
+	}
 
 	for _, envVar := range requiredEnvVars {
 		if os.Getenv(envVar) == "" {
@@ -415,6 +442,12 @@ func main() {
 		DbPath:          os.Getenv("DB_PATH"),
 		BotEmail:        os.Getenv("BOT_EMAIL"),
 		TelegramToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
+		MailerConfig: MailerConfig{
+			Port:     587,
+			Host:     os.Getenv("SMTP_HOST"),
+			Username: os.Getenv("SMTP_USERNAME"),
+			Password: os.Getenv("SMTP_PASSWORD"),
+		},
 	})
 
 	if err != nil {
